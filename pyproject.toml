@@ -1,0 +1,13 @@
+[project]
+name = "video-and-document-summarizer"
+version = "0.1.0"
+description = "A sleek AI-powered tool to condense YouTube videos and PDF documents into actionable insights"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=2.21.0",
+  "pymupdf>=1.27.1",
+  "streamlit>=1.54.0",
+  "youtube-transcript-api>=1.2.4",
+  "yt-dlp>=2026.2.4",
+]
