@@ -1,9 +1,10 @@
 import re
 from collections.abc import Iterable
-from typing import cast
+from typing import Any, cast
 
 import fitz  # type: ignore
 import streamlit as st
+import yt_dlp
 from openai import OpenAI
 
 # --- CONFIGURATION ---
@@ -26,6 +27,23 @@ def get_video_id(url: str) -> str:
     )
     match = re.search(pattern, url)
     return str(match.group(1)) if match else ""
+
+
+def get_video_duration(url: str) -> int:
+    """mengambil durasi video dalam detik"""
+    ydl_opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+    }
+    with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
+        info_dict = cast(Any, ydl.extract_info(url, download=False))
+
+        if info_dict is None:
+            return 0
+
+        duration = info_dict.get("duration")
+        return int(duration) if duration is not None else 0
 
 
 def get_transcript_text(video_id: str) -> str:
@@ -78,10 +96,12 @@ with st.sidebar:
         "Pilih Model", ["deepseek-v3-2-251201", "kimi-k2-250905"]
     )  # type: ignore
     temp: float = st.slider("Temperature", 0.0, 1.0, 0.3)
+    max_duration = st.slider("Maksimal Durasi (Menit)", 1, 75, 15)
 
 tab1, tab2 = st.tabs(["📺 YouTube Video", "📄 PDF Document"])
 
 # --- TAB 1: YOUTUBE ---
+
 with tab1:
     yt_url = st.text_input("Enter YouTube URL")
     if st.button("Summarize Video", key="btn_yt"):
@@ -90,28 +110,48 @@ with tab1:
             if not v_id:
                 _ = st.error("invalid URL")
             else:
-                with st.spinner("Processing transcript..."):
+                duration_min = 0.0
+
+                with st.spinner("Checking video duration..."):
                     try:
-                        text = get_transcript_text(v_id)
-                        res = client.chat.completions.create(
-                            model=model_choice,
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": "You are an expert assistant that summarizes content deeply. Provide detailed bullet points, explain key concepts, and provide a comprehensive final conclusion.",
-                                },
-                                {
-                                    "role": "user",
-                                    "content": f"Please provide a detailed summary of the following text: {text}",
-                                },
-                            ],
-                            temperature=temp,
-                        )
-                        display_summary_and_download(
-                            str(res.choices[0].message.content), v_id
-                        )
+                        duration_sec = get_video_duration(yt_url)
+                        duration_min = duration_sec / 60
                     except Exception as e:
-                        _ = st.error(f"Error: {e}")
+                        st.error(f"Gagal mengecek durasi: {e}")
+                        st.stop()
+
+                if duration_min > max_duration:
+                    st.error(
+                        f"Video terlalu panjang! Maksimal {max_duration} menit. (Video ini: {duration_min:.1f} menit)"
+                    )
+                else:
+                    with st.spinner("Processing transcript & AI Summary..."):
+                        try:
+                            text = get_transcript_text(v_id)
+                            res = client.chat.completions.create(
+                                model=model_choice,
+                                messages=[
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            "Anda adalah asisten ahli yang meringkas konten secara mendalam. "
+                                            "Tugas Anda adalah memberikan ringkasan dalam **Bahasa Indonesia** yang sangat detail, "
+                                            "menggunakan poin-poin, menjelaskan konsep utama, dan memberikan kesimpulan akhir yang komprehensif. "
+                                            "Apapun bahasa sumber teksnya, hasil akhir HARUS dalam Bahasa Indonesia."
+                                        ),
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": f"Tolong buatkan ringkasan mendalam dari teks berikut ke dalam Bahasa Indonesia: {text}",
+                                    },
+                                ],
+                                temperature=temp,
+                            )
+                            display_summary_and_download(
+                                str(res.choices[0].message.content), v_id
+                            )
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
 # --- TAB 2: PDF ---
 with tab2:
