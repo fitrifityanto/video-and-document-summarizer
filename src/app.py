@@ -1,123 +1,14 @@
-import re
-from typing import Any, cast
+from typing import cast
 
-import fitz  # type: ignore
 import streamlit as st
-import yt_dlp
-from openai import OpenAI
-from streamlit.runtime.uploaded_file_manager import UploadedFile
+
+from services.ai_engine import generate_summary, get_ai_client
+from services.document import extract_pdf_info, validate_pdf
+from services.youtube import get_transcript_text, get_video_duration, get_video_id
+from utils.helpers import display_summary_and_download
 
 # --- CONFIGURATION ---
-try:
-    client: OpenAI = OpenAI(
-        api_key=cast(str, st.secrets["SUMOPOD_API_KEY"]),
-        base_url=cast(str, st.secrets["BASE_URL"]),
-    )
-except KeyError as e:
-    _ = st.error(
-        f"Secret configuration not found: {e}. Please ensure your .streamlit/secrets.toml file is set up correctly."
-    )
-    _ = st.stop()
-
-
-def get_video_id(url: str) -> str:
-    """Extract YouTube video ID from various URL formats."""
-    pattern = (
-        r"(?:v=|\/live\/|\/shorts\/|youtu\.be\/|\/v\/|\/embed\/|^)([0-9A-Za-z_-]{11})"
-    )
-    match = re.search(pattern, url)
-    return str(match.group(1)) if match else ""
-
-
-def get_video_duration(url: str) -> int:
-    """Fetches video duration in seconds."""
-    ydl_opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": True,
-    }
-    with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
-        info_dict = cast(Any, ydl.extract_info(url, download=False))
-
-        if info_dict is None:
-            return 0
-
-        duration = info_dict.get("duration")
-        return int(duration) if duration is not None else 0
-
-
-def get_transcript_text(video_id: str) -> str:
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
-
-        try:
-            transcript = transcript_list.find_transcript(["id"])
-        except Exception:
-            transcript = transcript_list.find_transcript(["en"])
-
-        data = transcript.fetch()
-
-        return " ".join(
-            str(getattr(t, "text", t["text"] if isinstance(t, dict) else ""))
-            for t in data
-        ).strip()
-
-    except Exception as e:
-        raise Exception(f"Failed to fetch transcript: {str(e)}")
-
-
-def extract_pdf_info(uploaded_file: UploadedFile) -> tuple[int, str, int]:
-    """Extracts page count, full text, and character count."""
-    _ = uploaded_file.seek(0)
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    total_pages = len(doc)
-
-    text_gen = (str(doc[i].get_text()) for i in range(total_pages))
-    full_text = "".join(text_gen).strip()
-
-    return total_pages, full_text, len(full_text)
-
-
-def validate_pdf(
-    pages: int, chars: int, max_pages: int, max_chars: int
-) -> tuple[bool, str, str]:
-    """Validates document and returns status and message."""
-    if pages > max_pages:
-        return (
-            False,
-            f"❌ Document too long. Maximum {max_pages} pages.",
-            "error",
-        )
-    if chars > max_chars:
-        return (
-            False,
-            f"❌ Text too dense ({chars:,} characters). Maximum {max_chars} characters.",
-            "error",
-        )
-    if chars == 0:
-        return (
-            False,
-            "⚠️ No text detected. PDF may be empty or a scanned image.",
-            "warning",
-        )
-
-    return True, "✅ Document ready for summarization", "success"
-
-
-def display_summary_and_download(content: str, file_prefix: str):
-    """Helper function to display the summary and a download button."""
-    _ = st.success("Selesai!")
-    _ = st.markdown(content)
-
-    _ = st.download_button(
-        label="📥 Download Summary (.md)",
-        data=content,
-        file_name=f"summary_{file_prefix}.md",
-        mime="text/markdown",
-    )
+client = get_ai_client()
 
 
 # --- UI SETUP ---
@@ -150,7 +41,6 @@ with st.sidebar:
 tab1, tab2 = st.tabs(["📺 YouTube Video", "📄 PDF Document"])
 
 # --- TAB 1: YOUTUBE ---
-
 with tab1:
     yt_url = st.text_input("Enter YouTube URL")
     if st.button("Summarize Video", key="btn_yt"):
@@ -177,28 +67,8 @@ with tab1:
                     with st.spinner("Processing transcript & AI Summary..."):
                         try:
                             text = get_transcript_text(v_id)
-                            res = client.chat.completions.create(
-                                model=model_choice,
-                                messages=[
-                                    {
-                                        "role": "system",
-                                        "content": (
-                                            "Anda adalah asisten ahli yang meringkas konten secara mendalam. "
-                                            "Tugas Anda adalah memberikan ringkasan dalam **Bahasa Indonesia** yang sangat detail, "
-                                            "menggunakan poin-poin, menjelaskan konsep utama, dan memberikan kesimpulan akhir yang komprehensif. "
-                                            "Apapun bahasa sumber teksnya, hasil akhir HARUS dalam Bahasa Indonesia."
-                                        ),
-                                    },
-                                    {
-                                        "role": "user",
-                                        "content": f"Tolong buatkan ringkasan mendalam dari teks berikut ke dalam Bahasa Indonesia: {text}",
-                                    },
-                                ],
-                                temperature=temp,
-                            )
-                            display_summary_and_download(
-                                str(res.choices[0].message.content), v_id
-                            )
+                            summary = generate_summary(client, text, model_choice, temp)
+                            display_summary_and_download(str(summary), v_id)
                         except Exception as e:
                             _ = st.error(f"Error: {e}")
 
@@ -217,22 +87,21 @@ with tab2:
             or st.session_state.get("last_file_id") != file_id
         ):
             try:
-                with st.spinner("Analyzing document..."):
-                    total_pages, full_text, char_count = extract_pdf_info(uploaded_file)
+                total_pages, full_text, char_count = extract_pdf_info(uploaded_file)
 
-                    st.session_state.pdf_data = {
-                        "total_pages": total_pages,
-                        "full_text": full_text,
-                        "char_count": char_count,
-                    }
-                    st.session_state.last_file_id = file_id
+                st.session_state.pdf_data = {
+                    "total_pages": total_pages,
+                    "full_text": full_text,
+                    "char_count": char_count,
+                }
+                st.session_state.last_file_id = file_id
             except Exception as e:
                 _ = st.error(f"Failed to read PDF file: {e}")
                 _ = st.stop()
 
         pdf_info = st.session_state.pdf_data
         total_pages = pdf_info["total_pages"]
-        full_text = pdf_info["full_text"]
+        full_text = cast(str, pdf_info["full_text"])
         char_count = pdf_info["char_count"]
 
         col1, col2 = st.columns(2)
@@ -263,27 +132,7 @@ with tab2:
         if st.button("Summarize PDF", key="btn_pdf", disabled=not is_valid):
             with st.spinner("processing summary..."):
                 try:
-                    res = client.chat.completions.create(
-                        model=model_choice,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "Anda adalah asisten ahli yang meringkas konten secara mendalam. "
-                                    "Tugas Anda adalah memberikan ringkasan dalam **Bahasa Indonesia** yang sangat detail, "
-                                    "menggunakan poin-poin, menjelaskan konsep utama, dan memberikan kesimpulan akhir yang komprehensif. "
-                                    "Apapun bahasa sumber teksnya, hasil akhir HARUS dalam Bahasa Indonesia."
-                                ),
-                            },
-                            {
-                                "role": "user",
-                                "content": f"Please provide a detailed summary of the following text: {full_text}",
-                            },
-                        ],
-                        temperature=temp,
-                    )
-                    display_summary_and_download(
-                        str(res.choices[0].message.content), "document"
-                    )
+                    summary = generate_summary(client, full_text, model_choice, temp)
+                    display_summary_and_download(str(summary), "document")
                 except Exception as e:
                     _ = st.error(f"PDF Error: {e}")
