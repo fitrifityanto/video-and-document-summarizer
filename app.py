@@ -130,11 +130,21 @@ _ = st.write("Summarize YouTube videos or PDF documents using AI.")
 
 with st.sidebar:
     _ = st.header("Settings")
+
+    _ = st.subheader("🤖 AI Configuration")
     model_choice: str = st.selectbox(
         "Pilih Model", ["deepseek-v3-2-251201", "kimi-k2-250905"]
     )  # type: ignore
     temp: float = st.slider("Temperature", 0.0, 1.0, 0.3)
+
+    _ = st.divider()
+
+    _ = st.subheader("🎥 Video Settings")
     max_duration = st.slider("Maximum Duration (in minutes)", 1, 75, 15)
+
+    _ = st.divider()
+
+    _ = st.subheader("📄 Document Settings")
     max_pdf_pages = st.slider("Maximum PDF Pages", 1, 30, 15)
 
 tab1, tab2 = st.tabs(["📺 YouTube Video", "📄 PDF Document"])
