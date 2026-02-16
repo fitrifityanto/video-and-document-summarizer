@@ -206,58 +206,84 @@ with tab1:
 with tab2:
     uploaded_file = st.file_uploader("Upload file PDF", type="pdf")
 
+    if not uploaded_file:
+        st.session_state.pop("pdf_data", None)
+        st.session_state.pop("last_file_id", None)
+
     if uploaded_file:
-        with st.spinner("Analyzing document..."):
+        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+        if (
+            "pdf_data" not in st.session_state
+            or st.session_state.get("last_file_id") != file_id
+        ):
             try:
-                total_pages, full_text, char_count = extract_pdf_info(uploaded_file)
+                with st.spinner("Analyzing document..."):
+                    total_pages, full_text, char_count = extract_pdf_info(uploaded_file)
 
-                col1, col2 = st.columns(2)
-                _ = col1.metric("Page count", f"{total_pages} / {max_pdf_pages}")
-                char_status = "normal" if char_count <= 45000 else "inverse"
-                _ = col2.metric(
-                    "Character count",
-                    f"{char_count:,} / 45.000",
-                    delta_color=char_status,
-                )
-
-                is_valid, msg, msg_type = validate_pdf(
-                    total_pages, char_count, max_pdf_pages, 45000
-                )
-
-                if msg_type == "error":
-                    _ = st.error(msg)
-                elif msg_type == "warning":
-                    _ = st.warning(msg)
-                else:
-                    _ = st.success(msg)
-
-                if st.button("Summarize PDF", key="btn_pdf", disabled=not is_valid):
-                    with st.spinner("processing summary..."):
-                        try:
-                            res = client.chat.completions.create(
-                                model=model_choice,
-                                messages=[
-                                    {
-                                        "role": "system",
-                                        "content": (
-                                            "Anda adalah asisten ahli yang meringkas konten secara mendalam. "
-                                            "Tugas Anda adalah memberikan ringkasan dalam **Bahasa Indonesia** yang sangat detail, "
-                                            "menggunakan poin-poin, menjelaskan konsep utama, dan memberikan kesimpulan akhir yang komprehensif. "
-                                            "Apapun bahasa sumber teksnya, hasil akhir HARUS dalam Bahasa Indonesia."
-                                        ),
-                                    },
-                                    {
-                                        "role": "user",
-                                        "content": f"Please provide a detailed summary of the following text: {full_text}",
-                                    },
-                                ],
-                                temperature=temp,
-                            )
-                            display_summary_and_download(
-                                str(res.choices[0].message.content), "document"
-                            )
-                        except Exception as e:
-                            _ = st.error(f"PDF Error: {e}")
-
+                    st.session_state.pdf_data = {
+                        "total_pages": total_pages,
+                        "full_text": full_text,
+                        "char_count": char_count,
+                    }
+                    st.session_state.last_file_id = file_id
             except Exception as e:
-                _ = st.error(f"Failed to read PDF file : {e}")
+                _ = st.error(f"Failed to read PDF file: {e}")
+                _ = st.stop()
+
+        pdf_info = st.session_state.pdf_data
+        total_pages = pdf_info["total_pages"]
+        full_text = pdf_info["full_text"]
+        char_count = pdf_info["char_count"]
+
+        col1, col2 = st.columns(2)
+        _ = col1.metric("Page count", f"{total_pages} / {max_pdf_pages}")
+
+        char_count_int = int(pdf_info.get("char_count", 0))
+
+        char_status = "normal" if char_count_int <= 45000 else "inverse"
+
+        _ = col2.metric(
+            "Character count",
+            f"{char_count_int:,} / 45.000",
+            delta_color=char_status,
+        )
+
+        # Validasi
+        is_valid, msg, msg_type = validate_pdf(
+            int(total_pages), int(char_count), int(max_pdf_pages), 45000
+        )
+
+        if msg_type == "error":
+            _ = st.error(msg)
+        elif msg_type == "warning":
+            _ = st.warning(msg)
+        else:
+            _ = st.success(msg)
+
+        if st.button("Summarize PDF", key="btn_pdf", disabled=not is_valid):
+            with st.spinner("processing summary..."):
+                try:
+                    res = client.chat.completions.create(
+                        model=model_choice,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Anda adalah asisten ahli yang meringkas konten secara mendalam. "
+                                    "Tugas Anda adalah memberikan ringkasan dalam **Bahasa Indonesia** yang sangat detail, "
+                                    "menggunakan poin-poin, menjelaskan konsep utama, dan memberikan kesimpulan akhir yang komprehensif. "
+                                    "Apapun bahasa sumber teksnya, hasil akhir HARUS dalam Bahasa Indonesia."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Please provide a detailed summary of the following text: {full_text}",
+                            },
+                        ],
+                        temperature=temp,
+                    )
+                    display_summary_and_download(
+                        str(res.choices[0].message.content), "document"
+                    )
+                except Exception as e:
+                    _ = st.error(f"PDF Error: {e}")
