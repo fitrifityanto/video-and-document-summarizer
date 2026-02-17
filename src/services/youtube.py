@@ -1,8 +1,17 @@
 import re
-from collections.abc import Mapping
-from typing import cast
+
+# from collections.abc import Mapping
+from typing import TypedDict
 
 from yt_dlp import YoutubeDL
+
+
+class VideoDetails(TypedDict):
+    title: str
+    author: str
+    length: int
+    thumbnail_url: str
+    views: int
 
 
 def get_video_id(url: str) -> str:
@@ -12,22 +21,6 @@ def get_video_id(url: str) -> str:
     )
     match = re.search(pattern, url)
     return str(match.group(1)) if match else ""
-
-
-def get_video_duration(url: str) -> int:
-    """Fetches video duration in seconds."""
-    with YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
-        info = cast(Mapping[str, object] | None, ydl.extract_info(url, download=False))
-
-        if not info:
-            return 0
-
-        duration = info.get("duration")
-
-        if isinstance(duration, (int, float)):
-            return int(duration)
-
-        return 0
 
 
 def get_transcript_text(video_id: str) -> str:
@@ -51,3 +44,33 @@ def get_transcript_text(video_id: str) -> str:
 
     except Exception as e:
         raise Exception(f"Failed to fetch transcript: {str(e)}")
+
+
+def get_video_details(url: str) -> VideoDetails:
+    """
+    Extract video metadata using yt-dlp without downloading the file.
+    """
+
+    try:
+        with YoutubeDL(
+            {"quiet": True, "no_warnings": True, "extract_flat": True}
+        ) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            return {
+                "title": str(info.get("title") or "Unknown Title"),
+                "author": str(info.get("uploader") or "Unknown Channel"),
+                "length": int(info.get("duration") or 0),
+                "thumbnail_url": str(info.get("thumbnail") or ""),
+                "views": int(info.get("view_count") or 0),
+            }
+    except Exception as e:
+        raise Exception(f"yt-dlp error: {str(e)}")
+
+
+def get_video_duration(url: str) -> int:
+    """
+    Fetches only the duration of the video.
+    """
+    details = get_video_details(url)
+    return details["length"]
