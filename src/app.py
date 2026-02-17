@@ -4,7 +4,7 @@ import streamlit as st
 
 from services.ai_engine import generate_summary, get_ai_client
 from services.document import extract_pdf_info, validate_pdf
-from services.youtube import get_transcript_text, get_video_duration, get_video_id
+from services.youtube import get_transcript_text, get_video_details, get_video_id
 from utils.helpers import display_summary_and_download
 
 # --- CONFIGURATION ---
@@ -24,7 +24,7 @@ with st.sidebar:
 
     _ = st.subheader("🤖 AI Configuration")
     model_choice: str = st.selectbox(
-        "Pilih Model", ["deepseek-v3-2-251201", "kimi-k2-250905"]
+        "Pilih Model", ["seed-2-0-mini-free", "seed-1-8-free", "deepseek-v3-2-free"]
     )  # type: ignore
     temp: float = st.slider("Temperature", 0.0, 1.0, 0.3)
 
@@ -41,98 +41,159 @@ with st.sidebar:
 tab1, tab2 = st.tabs(["📺 YouTube Video", "📄 PDF Document"])
 
 # --- TAB 1: YOUTUBE ---
+
 with tab1:
-    yt_url = st.text_input("Enter YouTube URL")
-    if st.button("Summarize Video", key="btn_yt"):
-        if yt_url:
-            v_id = get_video_id(yt_url)
-            if not v_id:
-                _ = st.error("invalid URL")
+    yt_url = st.text_input("Enter YouTube URL", key="yt_url_input")
+
+    # Inisialisasi session states
+    if "yt_info" not in st.session_state:
+        st.session_state.yt_info = None
+    if "yt_summary" not in st.session_state:
+        st.session_state.yt_summary = None
+    if "last_v_id" not in st.session_state:
+        st.session_state.last_v_id = None
+
+    v_id = get_video_id(yt_url) if yt_url else None
+
+    if v_id != st.session_state.last_v_id:
+        st.session_state.yt_summary = None
+        st.session_state.yt_info = None
+        st.session_state.last_v_id = v_id
+        if v_id:
+            with st.spinner("Fetching video details..."):
+                try:
+                    st.session_state.yt_info = get_video_details(yt_url)
+                except Exception as e:
+                    _ = st.error(f"Error: {e}")
+
+    info = st.session_state.yt_info
+
+    if v_id and info:
+        duration_min = info["length"] / 60
+
+        col_img, col_txt = st.columns([1, 2])
+        with col_img:
+            _ = st.image(info["thumbnail_url"], width="stretch")
+        with col_txt:
+            _ = st.subheader(info["title"])
+            _ = st.caption(f"📺 Channel: {info['author']}")
+            m_col1, m_col2 = st.columns(2)
+            duration_status = "normal" if duration_min <= max_duration else "inverse"
+            _ = m_col1.metric(
+                "Duration",
+                f"{duration_min:.1f} / {max_duration} min",
+                delta_color=duration_status,
+            )
+            _ = m_col2.metric("Views", f"{info['views']:,}")
+
+        if not st.session_state.yt_summary:
+            if duration_min > max_duration:
+                _ = st.error(f"Video is too long! (Max: {max_duration} min)")
             else:
-                duration_min = 0.0
+                _ = st.success("Video ready to summarize")
 
-                with st.spinner("Checking video duration..."):
-                    try:
-                        duration_sec = get_video_duration(yt_url)
-                        duration_min = duration_sec / 60
-                    except Exception as e:
-                        _ = st.error(f"Failed to check duration: {e}")
-                        _ = st.stop()
-
-                if duration_min > max_duration:
-                    _ = st.error(
-                        f"Video is too long! Maximum {max_duration} minutes allowed. (this video is : {duration_min:.1f} minutes)"
-                    )
-                else:
-                    with st.spinner("Processing transcript & AI Summary..."):
+                if st.button("Summarize Video", key="btn_yt", type="primary"):
+                    with st.status(
+                        "Processing YouTube Content...", expanded=True
+                    ) as status:
                         try:
+                            status.write("Downloading transcript...")
                             text = get_transcript_text(v_id)
+
+                            status.write("Analyzing with AI...")
                             summary = generate_summary(client, text, model_choice, temp)
-                            display_summary_and_download(str(summary), v_id)
+
+                            # Simpan hasil ke session state
+                            st.session_state.yt_summary = str(summary)
+
+                            status.update(
+                                label="Summarization Complete!",
+                                state="complete",
+                                expanded=False,
+                            )
+
+                            st.rerun()
+
                         except Exception as e:
+                            status.update(label="Failed!", state="error")
                             _ = st.error(f"Error: {e}")
+
+        else:
+            display_summary_and_download(st.session_state.yt_summary, v_id)
+
+            _ = st.divider()
+            if st.button("🔄 Summarize Another Video / Reset", key="re_summarize"):
+                st.session_state.yt_summary = None
+                st.rerun()
+
 
 # --- TAB 2: PDF ---
 with tab2:
     uploaded_file = st.file_uploader("Upload file PDF", type="pdf")
 
-    if not uploaded_file:
-        st.session_state.pop("pdf_data", None)
-        st.session_state.pop("last_file_id", None)
+    if "pdf_summary" not in st.session_state:
+        st.session_state.pdf_summary = None
 
-    if uploaded_file:
+    if not uploaded_file:
+        st.session_state.pdf_data = None
+        st.session_state.last_file_id = None
+        st.session_state.pdf_summary = None
+
+    else:
         file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-        if (
-            "pdf_data" not in st.session_state
-            or st.session_state.get("last_file_id") != file_id
-        ):
+
+        if st.session_state.get("last_file_id") != file_id:
             try:
                 total_pages, full_text, char_count = extract_pdf_info(uploaded_file)
-
                 st.session_state.pdf_data = {
                     "total_pages": total_pages,
                     "full_text": full_text,
                     "char_count": char_count,
                 }
                 st.session_state.last_file_id = file_id
+                st.session_state.pdf_summary = None
             except Exception as e:
                 _ = st.error(f"Failed to read PDF file: {e}")
-                _ = st.stop()
+                st.stop()
 
         pdf_info = st.session_state.pdf_data
-        total_pages = pdf_info["total_pages"]
-        full_text = cast(str, pdf_info["full_text"])
-        char_count = pdf_info["char_count"]
 
         col1, col2 = st.columns(2)
-        _ = col1.metric("Page count", f"{total_pages} / {max_pdf_pages}")
+        _ = col1.metric("Page count", f"{pdf_info['total_pages']} / {max_pdf_pages}")
 
-        char_count_int = int(pdf_info.get("char_count", 0))
-
-        char_status = "normal" if char_count_int <= 45000 else "inverse"
-
+        char_count = int(pdf_info["char_count"])
+        char_status = "normal" if char_count <= 45000 else "inverse"
         _ = col2.metric(
-            "Character count",
-            f"{char_count_int:,} / 45.000",
-            delta_color=char_status,
+            "Character count", f"{char_count:,} / 45.000", delta_color=char_status
         )
 
-        # Validasi
         is_valid, msg, msg_type = validate_pdf(
-            int(total_pages), int(char_count), int(max_pdf_pages), 45000
+            int(pdf_info["total_pages"]), char_count, int(max_pdf_pages), 45000
         )
 
-        if msg_type == "error":
-            _ = st.error(msg)
-        elif msg_type == "warning":
-            _ = st.warning(msg)
-        else:
-            _ = st.success(msg)
+        if st.session_state.pdf_summary is None:
+            if msg_type == "error":
+                _ = st.error(msg)
+            elif msg_type == "warning":
+                _ = st.warning(msg)
+            else:
+                _ = st.success(msg)
 
-        if st.button("Summarize PDF", key="btn_pdf", disabled=not is_valid):
-            with st.spinner("processing summary..."):
-                try:
-                    summary = generate_summary(client, full_text, model_choice, temp)
-                    display_summary_and_download(str(summary), "document")
-                except Exception as e:
-                    _ = st.error(f"PDF Error: {e}")
+            if st.button(
+                "Summarize PDF", key="btn_pdf", disabled=not is_valid, type="primary"
+            ):
+                with st.spinner("Processing summary..."):
+                    try:
+                        pdf_text = str(pdf_info["full_text"])
+                        summary = generate_summary(client, pdf_text, model_choice, temp)
+                        st.session_state.pdf_summary = str(summary)
+                        st.rerun()
+                    except Exception as e:
+                        _ = st.error(f"AI Error: {e}")
+        else:
+            display_summary_and_download(st.session_state.pdf_summary, "document")
+
+            _ = st.divider()
+            if st.button("🔄 Summarize Another PDF", key="reset_pdf"):
+                st.session_state.pdf_summary = None
+                st.rerun()
